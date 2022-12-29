@@ -1,4 +1,4 @@
-const createDom = (fiber) => {
+const createDOM = (fiber) => {
     // 当 fiber 类型是 TEXT_ELEMENT 的时候我们创建一个 text 节点而不是普通的节点。
     const dom =
         fiber.type === "TEXT_ELEMENT"
@@ -56,7 +56,7 @@ function updateDOM(dom, prevProps, nextPorps) {
 
 const commitRoot = () => {
     // add nodes to dom
-    // commit 到 dom 上时，也需要对这个数组中的 fiber 变更，移除 dom
+    // commit 到 dom 上时，也需要对这个数组 中的 fiber 变更，移除 dom
     deletions.forEach(commitWork);
     commitWork(wipRoot.child);
     // 记录上次的 fiber 节点
@@ -66,19 +66,35 @@ const commitRoot = () => {
 
 const commitWork = (fiber) => {
     if (!fiber) return;
-    const domParent = fiber.parent.dom;
-    // domParent.appendChild(fiber.dom);
+
+    let domParentFiber = fiber.parent;
+    // 向上找到存在的 DOM
+    let idx = 0;
+    while (!domParentFiber.dom) {
+        domParentFiber = domParentFiber.parent;
+        idx++;
+    }
+    const domParent = domParentFiber.dom;
+    // console.log(fiber, domParent, idx);
     if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
         domParent.appendChild(fiber.dom);
     } else if (fiber.effectTag === "UPDATE" && fiber.dom !== null) {
         // 更新 dom
         updateDOM(fiber.dom, fiber.alternate.props, fiber.props);
     } else if (fiber.effectTag === "DELETION") {
-        domParent.removeChild(fiber.dom);
+        commitDeletion(fiber, domParent);
     }
     commitWork(fiber.child);
     commitWork(fiber.sibling);
 };
+
+const commitDeletion = (fiber, domParent) => {
+    if (fiber.dom) {
+        domParent.removeChild(fiber.dom);
+    } else {
+        commitDeletion(fiber.child, domParent);
+    }
+}
 
 const render = (element, container) => {
     wipRoot = {
@@ -126,14 +142,12 @@ requestIdleCallback(workLoop);
  * 还需要返回下一个执行的任务单元
  */
 const performUnitOfWork = (currentUnitOfWork) => {
-    // TODO add dom node
-    // 如果没有节点就创建一个节点
-    if (!currentUnitOfWork.dom) {
-        currentUnitOfWork.dom = createDom(currentUnitOfWork);
+    const isFunctionComponent = currentUnitOfWork.type instanceof Function;
+    if (isFunctionComponent) {
+        updateFunctionComponent(currentUnitOfWork);
+    } else {
+        updateHostComponent(currentUnitOfWork);
     }
-    // TODO create new fibers
-    const elements = currentUnitOfWork.props.children;
-    reconcileChildren(currentUnitOfWork, elements);
     // TODO return next unit of work
     if (currentUnitOfWork.child) {
         return currentUnitOfWork.child;
@@ -146,6 +160,64 @@ const performUnitOfWork = (currentUnitOfWork) => {
         newUnitOfWork = newUnitOfWork.parent;
     }
 };
+
+let wipFiber = null;
+let hookIndex = null;
+
+const updateFunctionComponent = (fiber) => {
+    wipFiber = fiber;
+    // 初始化 hook 相关的内容
+    hookIndex = 0;
+    // 用数组方便在同一个函数组件中多次调用 useState
+    wipFiber.hooks = [];
+    const children = [fiber.type(fiber.props)];
+    reconcileChildren(fiber, children);
+}
+
+// useState hook
+export const useState = inital => {
+    // 旧 hook
+    const oldHook = wipFiber.alternate && wipFiber.alternate.hooks && wipFiber.alternate.hooks[hookIndex];
+    // 新 hook
+    const hook = {
+        // state: 函数组件的状态
+        state: oldHook ? oldHook.state : inital,
+        queue: []
+    };
+    // 执行actions，并且更新state
+    const actions = oldHook ? oldHook.queue : [];
+    actions.forEach(action => {
+        if (action instanceof Function) {
+            hook.state = action(hook.state);
+        } else {
+            hook.state = action;
+        }
+    })
+    const setState = action => {
+        hook.queue.push(action)
+        wipRoot = {
+            dom: currentRoot.dom,
+            props: currentRoot.props,
+            alternate: currentRoot,
+        }
+        nextUnitOfWork = wipRoot;
+        deletions = [];
+    }
+    wipFiber.hooks.push(hook);
+    hookIndex++;
+    return [hook.state, setState];
+}
+
+const updateHostComponent = (fiber) => {
+    // TODO add dom node
+    // 如果没有节点就创建一个节点
+    if (!fiber.dom) {
+        fiber.dom = createDOM(fiber);
+    }
+    // TODO create new fibers
+    const elements = fiber.props.children;
+    reconcileChildren(fiber, elements);
+}
 
 // 调和旧的 fiber 节点和新的 react element
 // 迭代 react element 数组同时 会迭代旧的 fiber 节点 wipFiber.alternate
